@@ -1,36 +1,32 @@
 package com.sourcepoint.reactnativecmp
 
+import android.view.View
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.sourcepoint.cmplibrary.SpClient
-import com.sourcepoint.cmplibrary.creation.delegate.spConsentLibLazy
-import com.sourcepoint.cmplibrary.model.exposed.SpCampaigns
-import com.sourcepoint.cmplibrary.model.exposed.SpConfig
-import com.sourcepoint.cmplibrary.exception.CampaignType
+import com.sourcepoint.cmplibrary.SpConsentLib
+import com.sourcepoint.cmplibrary.creation.ConfigOption.SUPPORT_LEGACY_USPSTRING
+import com.sourcepoint.cmplibrary.creation.SpConfigDataBuilder
+import com.sourcepoint.cmplibrary.creation.makeConsentLib
+import com.sourcepoint.cmplibrary.data.network.util.CampaignType.*
+import com.sourcepoint.cmplibrary.model.ConsentAction
 import com.sourcepoint.cmplibrary.model.exposed.SPConsents
-import com.sourcepoint.reactnativecmp.arguments.Arguments
+import com.sourcepoint.cmplibrary.util.clearAllData
+import com.sourcepoint.cmplibrary.util.userConsents
+import com.sourcepoint.reactnativecmp.arguments.toList
+import com.sourcepoint.reactnativecmp.consents.RNSPGDPRConsent
+import com.sourcepoint.reactnativecmp.consents.RNSPUserData
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) : 
-    ReactContextBaseJavaModule(reactContext), ActivityEventListener {
+    ReactContextBaseJavaModule(reactContext), ActivityEventListener, SpClient {
 
     companion object {
         const val NAME = "ReactNativeCmp"
     }
 
-    private val spConsentLib by spConsentLibLazy {
-        activity = currentActivity
-        spClient = LocalClient()
-        spConfig = SpConfig(
-            accountId = 22,
-            propertyId = 7639,
-            propertyName = "tcfv2.mobile.webview",
-            messLanguage = com.sourcepoint.cmplibrary.model.MessageLanguage.ENGLISH,
-            campaignsEnv = com.sourcepoint.cmplibrary.model.exposed.SPCampaignEnv.PUBLIC,
-            campaigns = SpCampaigns()
-        )
-    }
-
-    private var builtConfig: SpConfig? = null
+    private var spConsentLib: SpConsentLib? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -38,32 +34,8 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
 
     override fun getName(): String = NAME
 
-    inner class LocalClient : SpClient {
-        override fun onUIFinished(view: android.view.View) {
-            sendEvent("onSPUIFinished", null)
-        }
-
-        override fun onUIReady(view: android.view.View) {
-            sendEvent("onSPUIReady", null)
-        }
-
-        override fun onAction(view: android.view.View, consentAction: com.sourcepoint.cmplibrary.model.ConsentAction): com.sourcepoint.cmplibrary.model.ConsentAction {
-            val actionJson = Arguments.getActionMap(consentAction)
-            sendEvent("internalOnAction", Arguments.writeableMapToJson(actionJson))
-            return consentAction
-        }
-
-        override fun onSpFinished(sPConsents: SPConsents) {
-            sendEvent("onFinished", null)
-        }
-
-        override fun onConsentReady(consent: SPConsents) {}
-
-        override fun onError(error: Throwable) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", error.message ?: "Unknown error")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+    private fun runOnMainThread(runnable: () -> Unit) {
+        reactApplicationContext.runOnUiQueueThread(runnable)
     }
 
     @ReactMethod
@@ -75,24 +47,40 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
         options: ReadableMap?
     ) {
         try {
-            val spConfig = Arguments.getConfig(
-                accountId = accountId.toInt(),
-                propertyId = propertyId.toInt(),
-                propertyName = propertyName,
-                campaigns = campaigns,
-                options = options
-            )
-            
-            builtConfig = spConfig
-            spConsentLib.spConfig = spConfig
-            
-            currentActivity?.let { activity ->
-                spConsentLib.activity = activity
+            val convertedCampaigns = campaigns.SPCampaigns()
+            val parsedOptions = com.sourcepoint.reactnativecmp.arguments.BuildOptions(options)
+            val config = SpConfigDataBuilder().apply {
+                addAccountId(accountId.toInt())
+                addPropertyName(propertyName)
+                addPropertyId(propertyId.toInt())
+                addMessageTimeout(parsedOptions.messageTimeoutInMilliseconds)
+                addMessageLanguage(parsedOptions.language)
+                convertedCampaigns.gdpr?.let {
+                    addCampaign(campaignType = GDPR, params = it.targetingParams, groupPmId = it.groupPmId)
+                }
+                convertedCampaigns.usnat?.let {
+                    addCampaign(
+                        campaignType = USNAT,
+                        params = it.targetingParams,
+                        groupPmId = it.groupPmId,
+                        configParams = if(it.supportLegacyUSPString) setOf(SUPPORT_LEGACY_USPSTRING) else emptySet()
+                    )
+                }
+                convertedCampaigns.preferences?.let {
+                    addCampaign(campaignType = PREFERENCES, params = it.targetingParams, groupPmId = it.groupPmId)
+                }
+                convertedCampaigns.globalcmp?.let {
+                    addCampaign(campaignType = GLOBALCMP, params = it.targetingParams, groupPmId = it.groupPmId)
+                }
+            }.build()
+
+            reactApplicationContext.currentActivity?.let {
+                spConsentLib = makeConsentLib(config, it, this, parsedOptions.androidDismissMessageOnBackPress)
+            } ?: run {
+                onError(Error("No activity found when building the SDK"))
             }
         } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Build failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
+            onError(e)
         }
     }
 
@@ -100,24 +88,18 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
     fun loadMessage(params: ReadableMap?) {
         try {
             val authId = params?.getString("authId")
-            if (authId != null) {
-                spConsentLib.loadMessage(authId)
-            } else {
-                spConsentLib.loadMessage()
+            runOnMainThread {
+                spConsentLib?.loadMessage(authId = authId, cmpViewId = View.generateViewId())
             }
         } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Load message failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
+            onError(e)
         }
     }
 
     @ReactMethod
     fun getUserData(promise: Promise) {
         try {
-            val userData = spConsentLib.userData
-            val userDataMap = Arguments.getUserDataMap(userData)
-            promise.resolve(userDataMap)
+            promise.resolve(userConsentsToWriteableMap(userConsents(reactApplicationContext)))
         } catch (e: Exception) {
             promise.reject("GET_USER_DATA_ERROR", e.message, e)
         }
@@ -125,68 +107,32 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun clearLocalData() {
-        try {
-            spConsentLib.clearAllData()
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Clear data failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        clearAllData(reactApplicationContext)
     }
 
     @ReactMethod
     fun loadGDPRPrivacyManager(pmId: String) {
-        try {
-            spConsentLib.loadPrivacyManager(pmId, CampaignType.GDPR)
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Load GDPR PM failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        runOnMainThread { spConsentLib?.loadPrivacyManager(pmId, GDPR) }
     }
 
     @ReactMethod
     fun loadUSNatPrivacyManager(pmId: String) {
-        try {
-            spConsentLib.loadPrivacyManager(pmId, CampaignType.USNAT)
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Load USNat PM failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        runOnMainThread { spConsentLib?.loadPrivacyManager(pmId, USNAT) }
     }
 
     @ReactMethod
     fun loadGlobalCmpPrivacyManager(pmId: String) {
-        try {
-            spConsentLib.loadPrivacyManager(pmId, CampaignType.GLOBALCMP)
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Load Global CMP PM failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        runOnMainThread { spConsentLib?.loadPrivacyManager(pmId, GLOBALCMP) }
     }
 
     @ReactMethod
     fun loadPreferenceCenter(id: String) {
-        try {
-            spConsentLib.loadPreferenceCenter(id)
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Load preference center failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        runOnMainThread { spConsentLib?.loadPrivacyManager(id, PREFERENCES) }
     }
 
     @ReactMethod
     fun dismissMessage() {
-        try {
-            spConsentLib.dismissMessage()
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Dismiss message failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
-        }
+        runOnMainThread { spConsentLib?.dismissMessage() }
     }
 
     @ReactMethod
@@ -196,30 +142,19 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
         legIntCategories: ReadableArray,
         callback: Callback
     ) {
-        try {
-            val vendorsList = Arguments.readableArrayToStringList(vendors)
-            val categoriesList = Arguments.readableArrayToStringList(categories)
-            val legIntCategoriesList = Arguments.readableArrayToStringList(legIntCategories)
-            
-            spConsentLib.postCustomConsent(
-                vendors = vendorsList,
-                categories = categoriesList,
-                legIntCategories = legIntCategoriesList,
-                campaignType = CampaignType.GDPR,
-                onSuccess = { spConsents ->
-                    val gdprConsent = Arguments.getGdprConsentMap(spConsents)
-                    callback.invoke(gdprConsent)
-                },
-                onError = { error ->
-                    val errorMap = WritableNativeMap()
-                    errorMap.putString("description", error.message ?: "Custom consent failed")
-                    sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
+        runOnMainThread {
+            spConsentLib?.customConsentGDPR(
+                vendors.toList(),
+                categories.toList(),
+                legIntCategories.toList(),
+                success = { consents ->
+                    if (consents?.gdpr != null) {
+                        callback.invoke(RNSPGDPRConsent(consents.gdpr!!.consent).toRN())
+                    } else {
+                        callback.invoke(RNSPGDPRConsent(applies = true).toRN())
+                    }
                 }
             )
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Custom consent failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
         }
     }
 
@@ -230,58 +165,65 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
         legIntCategories: ReadableArray,
         callback: Callback
     ) {
-        try {
-            val vendorsList = Arguments.readableArrayToStringList(vendors)
-            val categoriesList = Arguments.readableArrayToStringList(categories)
-            val legIntCategoriesList = Arguments.readableArrayToStringList(legIntCategories)
-            
-            spConsentLib.deleteCustomConsent(
-                vendors = vendorsList,
-                categories = categoriesList,
-                legIntCategories = legIntCategoriesList,
-                campaignType = CampaignType.GDPR,
-                onSuccess = { spConsents ->
-                    val gdprConsent = Arguments.getGdprConsentMap(spConsents)
-                    callback.invoke(gdprConsent)
-                },
-                onError = { error ->
-                    val errorMap = WritableNativeMap()
-                    errorMap.putString("description", error.message ?: "Delete custom consent failed")
-                    sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
+        runOnMainThread {
+            spConsentLib?.deleteCustomConsentTo(
+                vendors.toList(),
+                categories.toList(),
+                legIntCategories.toList(),
+                success = { consents ->
+                    if (consents?.gdpr != null) {
+                        callback.invoke(RNSPGDPRConsent(consents.gdpr!!.consent).toRN())
+                    } else {
+                        callback.invoke(RNSPGDPRConsent(applies = true).toRN())
+                    }
                 }
             )
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Delete custom consent failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
         }
     }
 
     @ReactMethod
     fun rejectAll(campaignType: String) {
-        try {
-            val campaign = when (campaignType.lowercase()) {
-                "gdpr" -> CampaignType.GDPR
-                "usnat" -> CampaignType.USNAT
-                "preferences" -> CampaignType.PREFERENCES
-                "globalcmp" -> CampaignType.GLOBALCMP
-                else -> throw IllegalArgumentException("Invalid campaign type: $campaignType")
-            }
-            
-            spConsentLib.rejectAll(campaign)
-        } catch (e: Exception) {
-            val errorMap = WritableNativeMap()
-            errorMap.putString("description", e.message ?: "Reject all failed")
-            sendEvent("internalOnError", Arguments.writeableMapToJson(errorMap))
+        runOnMainThread {
+            spConsentLib?.rejectAll(campaignTypeFrom(campaignType))
         }
     }
 
-    private fun sendEvent(eventName: String, params: Any?) {
-        reactApplicationContext
-            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-            .emit(eventName, params)
+    // SpClient implementation
+    override fun onAction(view: View, consentAction: ConsentAction): ConsentAction {
+        emitInternalOnAction(Json.encodeToString(mapOf(
+            "actionType" to RNSourcepointActionType.from(consentAction.actionType).name,
+            "customActionId" to consentAction.customActionId
+        )))
+        return consentAction
     }
 
+    override fun onConsentReady(consent: SPConsents) {}
+
+    override fun onError(error: Throwable) {
+        emitInternalOnError(Json.encodeToString(mapOf("description" to error.message)))
+    }
+
+    override fun onNoIntentActivitiesFound(url: String) {}
+
+    override fun onSpFinished(sPConsents: SPConsents) {
+        emitOnFinished()
+    }
+
+    override fun onMessageInactivityTimeout() {
+        emitOnMessageInactivityTimeout()
+    }
+
+    override fun onUIFinished(view: View) {
+        spConsentLib?.removeView(view)
+        emitOnSPUIFinished()
+    }
+
+    override fun onUIReady(view: View) {
+        spConsentLib?.showView(view)
+        emitOnSPUIReady()
+    }
+
+    // ActivityEventListener implementation
     override fun onActivityResult(
         activity: android.app.Activity?,
         requestCode: Int,
@@ -294,4 +236,37 @@ class ReactNativeCmpLegacyModule(reactContext: ReactApplicationContext) :
     override fun onNewIntent(intent: android.content.Intent?) {
         // Handle new intents if needed
     }
+
+    // Event emitters
+    private fun emitInternalOnAction(params: String) {
+        sendEvent("internalOnAction", params)
+    }
+
+    private fun emitInternalOnError(params: String) {
+        sendEvent("internalOnError", params)
+    }
+
+    private fun emitOnFinished() {
+        sendEvent("onFinished", null)
+    }
+
+    private fun emitOnMessageInactivityTimeout() {
+        sendEvent("onMessageInactivityTimeout", null)
+    }
+
+    private fun emitOnSPUIFinished() {
+        sendEvent("onSPUIFinished", null)
+    }
+
+    private fun emitOnSPUIReady() {
+        sendEvent("onSPUIReady", null)
+    }
+
+    private fun sendEvent(eventName: String, params: Any?) {
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit(eventName, params)
+    }
+
+    private fun userConsentsToWriteableMap(consents: SPConsents) = RNSPUserData(consents).toRN()
 }
