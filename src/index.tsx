@@ -7,39 +7,111 @@ import type {
   SPBuildOptions,
   GDPRConsent,
   SPCampaignType,
-  SPError
+  SPError,
 } from './NativeReactNativeCmp';
 import ReactNativeCmp, { SPMessageLanguage } from './NativeReactNativeCmp';
 import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypes';
+import { NativeEventEmitter, NativeModules } from 'react-native';
 
 export * from './NativeReactNativeCmp';
 
 const defaultBuildOptions: SPBuildOptions = {
   language: SPMessageLanguage.ENGLISH,
   messageTimeoutInSeconds: 30,
-}
+};
 
 export default class SPConsentManager implements Spec {
-  /** intended to be used by the SDK only */
-  internalOnAction: EventEmitter<string> = ReactNativeCmp.internalOnAction;
-  /** intended to be used by the SDK only */
-  internalOnError: EventEmitter<string> = ReactNativeCmp.internalOnError;
+  private eventEmitter: NativeEventEmitter | null = null;
 
-  onSPUIReady: EventEmitter<void> = ReactNativeCmp.onSPUIReady;
-  onSPUIFinished: EventEmitter<void> = ReactNativeCmp.onSPUIFinished;
-  onFinished: EventEmitter<void> = ReactNativeCmp.onFinished;
-  onMessageInactivityTimeout: EventEmitter<void> = ReactNativeCmp.onMessageInactivityTimeout;
+  /** intended to be used by the SDK only */
+  internalOnAction: EventEmitter<string>;
+  /** intended to be used by the SDK only */
+  internalOnError: EventEmitter<string>;
+
+  onSPUIReady: EventEmitter<void>;
+  onSPUIFinished: EventEmitter<void>;
+  onFinished: EventEmitter<void>;
+  onMessageInactivityTimeout: EventEmitter<void>;
+
+  constructor() {
+    if (ReactNativeCmp) {
+      // For TurboModules, use the event emitters directly
+      if (ReactNativeCmp.internalOnAction) {
+        this.internalOnAction = ReactNativeCmp.internalOnAction;
+        this.internalOnError = ReactNativeCmp.internalOnError;
+        this.onSPUIReady = ReactNativeCmp.onSPUIReady;
+        this.onSPUIFinished = ReactNativeCmp.onSPUIFinished;
+        this.onFinished = ReactNativeCmp.onFinished;
+        this.onMessageInactivityTimeout =
+          ReactNativeCmp.onMessageInactivityTimeout;
+      } else {
+        // For legacy bridge modules, create NativeEventEmitter
+        this.eventEmitter = new NativeEventEmitter(
+          NativeModules.ReactNativeCmp
+        );
+        this.internalOnAction = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'internalOnAction'
+        ) as any;
+        this.internalOnError = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'internalOnError'
+        ) as any;
+        this.onSPUIReady = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'onSPUIReady'
+        ) as any;
+        this.onSPUIFinished = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'onSPUIFinished'
+        ) as any;
+        this.onFinished = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'onFinished'
+        ) as any;
+        this.onMessageInactivityTimeout = this.eventEmitter.addListener.bind(
+          this.eventEmitter,
+          'onMessageInactivityTimeout'
+        ) as any;
+      }
+    } else {
+      // Fallback empty event emitters
+      const emptyEmitter = () => ({ remove: () => {} });
+      this.internalOnAction = emptyEmitter as any;
+      this.internalOnError = emptyEmitter as any;
+      this.onSPUIReady = emptyEmitter as any;
+      this.onSPUIFinished = emptyEmitter as any;
+      this.onFinished = emptyEmitter as any;
+      this.onMessageInactivityTimeout = emptyEmitter as any;
+    }
+  }
 
   onAction(handler: (action: SPAction) => void) {
-    ReactNativeCmp.internalOnAction((stringifiedAction) => {
-      handler(JSON.parse(stringifiedAction) as SPAction);
-    });
+    if (ReactNativeCmp?.internalOnAction) {
+      // TurboModule architecture
+      ReactNativeCmp.internalOnAction((stringifiedAction) => {
+        handler(JSON.parse(stringifiedAction) as SPAction);
+      });
+    } else if (this.eventEmitter) {
+      // Legacy bridge architecture
+      this.eventEmitter.addListener('internalOnAction', (stringifiedAction) => {
+        handler(JSON.parse(stringifiedAction) as SPAction);
+      });
+    }
   }
 
   onError(handler: (error: SPError) => void) {
-    ReactNativeCmp.internalOnError((stringifiedError) => {
-      handler(JSON.parse(stringifiedError) as SPError);
-    });
+    if (ReactNativeCmp?.internalOnError) {
+      // TurboModule architecture
+      ReactNativeCmp.internalOnError((stringifiedError) => {
+        handler(JSON.parse(stringifiedError) as SPError);
+      });
+    } else if (this.eventEmitter) {
+      // Legacy bridge architecture
+      this.eventEmitter.addListener('internalOnError', (stringifiedError) => {
+        handler(JSON.parse(stringifiedError) as SPError);
+      });
+    }
   }
 
   getConstants?(): {} {
@@ -51,41 +123,66 @@ export default class SPConsentManager implements Spec {
     propertyId: number,
     propertyName: string,
     campaigns: SPCampaigns,
-    options: SPBuildOptions = defaultBuildOptions,
+    options: SPBuildOptions = defaultBuildOptions
   ) {
-    ReactNativeCmp.build(accountId, propertyId, propertyName, campaigns, options);
+    if (ReactNativeCmp?.build) {
+      ReactNativeCmp.build(
+        accountId,
+        propertyId,
+        propertyName,
+        campaigns,
+        options
+      );
+    }
   }
 
   getUserData(): Promise<SPUserData> {
-    return ReactNativeCmp.getUserData();
+    if (ReactNativeCmp?.getUserData) {
+      return ReactNativeCmp.getUserData();
+    }
+    return Promise.reject(new Error('Native module not available'));
   }
 
   loadMessage(params?: LoadMessageParams) {
-    ReactNativeCmp.loadMessage(params);
+    if (ReactNativeCmp?.loadMessage) {
+      ReactNativeCmp.loadMessage(params);
+    }
   }
 
   clearLocalData() {
-    ReactNativeCmp.clearLocalData();
+    if (ReactNativeCmp?.clearLocalData) {
+      ReactNativeCmp.clearLocalData();
+    }
   }
 
   loadGDPRPrivacyManager(pmId: string) {
-    ReactNativeCmp.loadGDPRPrivacyManager(pmId);
+    if (ReactNativeCmp?.loadGDPRPrivacyManager) {
+      ReactNativeCmp.loadGDPRPrivacyManager(pmId);
+    }
   }
 
   loadUSNatPrivacyManager(pmId: string) {
-    ReactNativeCmp.loadUSNatPrivacyManager(pmId);
+    if (ReactNativeCmp?.loadUSNatPrivacyManager) {
+      ReactNativeCmp.loadUSNatPrivacyManager(pmId);
+    }
   }
 
   loadGlobalCmpPrivacyManager(pmId: string) {
-    ReactNativeCmp.loadGlobalCmpPrivacyManager(pmId);
+    if (ReactNativeCmp?.loadGlobalCmpPrivacyManager) {
+      ReactNativeCmp.loadGlobalCmpPrivacyManager(pmId);
+    }
   }
 
   loadPreferenceCenter(id: string) {
-    ReactNativeCmp.loadPreferenceCenter(id);
+    if (ReactNativeCmp?.loadPreferenceCenter) {
+      ReactNativeCmp.loadPreferenceCenter(id);
+    }
   }
 
   dismissMessage(): void {
-    ReactNativeCmp.dismissMessage();
+    if (ReactNativeCmp?.dismissMessage) {
+      ReactNativeCmp.dismissMessage();
+    }
   }
 
   postCustomConsentGDPR(
@@ -94,7 +191,14 @@ export default class SPConsentManager implements Spec {
     legIntCategories: string[],
     callback: (consent: GDPRConsent) => void
   ) {
-    ReactNativeCmp.postCustomConsentGDPR(vendors, categories, legIntCategories, callback);
+    if (ReactNativeCmp?.postCustomConsentGDPR) {
+      ReactNativeCmp.postCustomConsentGDPR(
+        vendors,
+        categories,
+        legIntCategories,
+        callback
+      );
+    }
   }
 
   postDeleteCustomConsentGDPR(
@@ -103,10 +207,19 @@ export default class SPConsentManager implements Spec {
     legIntCategories: string[],
     callback: (consent: GDPRConsent) => void
   ) {
-    ReactNativeCmp.postDeleteCustomConsentGDPR(vendors, categories, legIntCategories, callback);
+    if (ReactNativeCmp?.postDeleteCustomConsentGDPR) {
+      ReactNativeCmp.postDeleteCustomConsentGDPR(
+        vendors,
+        categories,
+        legIntCategories,
+        callback
+      );
+    }
   }
 
   rejectAll(campaignType: SPCampaignType) {
-    ReactNativeCmp.rejectAll(campaignType)
+    if (ReactNativeCmp?.rejectAll) {
+      ReactNativeCmp.rejectAll(campaignType);
+    }
   }
 }

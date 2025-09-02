@@ -1,4 +1,4 @@
-import { TurboModuleRegistry } from 'react-native';
+import { TurboModuleRegistry, NativeModules } from 'react-native';
 import type { TurboModule } from 'react-native';
 import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypes';
 
@@ -14,11 +14,11 @@ export const enum SPCampaignEnvironment {
 }
 
 export const enum SPCampaignType {
-  Gdpr = "gdpr",
-  UsNat = "usnat",
-  IOS14 = "ios14",
-  Preferences = "preferences",
-  GlobalCmp = "globalcmp",
+  Gdpr = 'gdpr',
+  UsNat = 'usnat',
+  IOS14 = 'ios14',
+  Preferences = 'preferences',
+  GlobalCmp = 'globalcmp',
 }
 
 export const enum SPMessageLanguage {
@@ -207,7 +207,7 @@ export type SPBuildOptions = {
   language?: SPMessageLanguage;
   messageTimeoutInSeconds?: number;
   androidDismissMessageOnBackPress?: boolean;
-}
+};
 
 export type SPError = {
   description: string;
@@ -219,7 +219,7 @@ export interface Spec extends TurboModule {
     propertyId: number,
     propertyName: string,
     campaigns: SPCampaigns,
-    options?: SPBuildOptions,
+    options?: SPBuildOptions
   ): void;
   getUserData(): Promise<SPUserData>;
   loadMessage(params?: LoadMessageParams): void;
@@ -251,4 +251,17 @@ export interface Spec extends TurboModule {
   readonly internalOnError: EventEmitter<string>;
 }
 
-export default TurboModuleRegistry.getEnforcing<Spec>('ReactNativeCmp');
+function createNativeReactNativeCmp(): Spec | null {
+  if (TurboModuleRegistry.getEnforcing) {
+    try {
+      return TurboModuleRegistry.getEnforcing<Spec>('ReactNativeCmp');
+    } catch (e) {
+      // TurboModule not available, fallback to legacy
+    }
+  }
+
+  // Fallback to legacy bridge
+  return NativeModules.ReactNativeCmp as Spec;
+}
+
+export default createNativeReactNativeCmp();

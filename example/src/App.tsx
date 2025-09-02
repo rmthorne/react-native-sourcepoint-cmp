@@ -14,7 +14,11 @@ import SPConsentManager, {
   SPCampaignType,
   SPMessageLanguage,
 } from '@sourcepoint/react-native-cmp';
-import type { GDPRConsent, SPCampaigns, SPUserData } from '@sourcepoint/react-native-cmp';
+import type {
+  GDPRConsent,
+  SPCampaigns,
+  SPUserData,
+} from '@sourcepoint/react-native-cmp';
 import type { LaunchArgs } from './LaunchArgs';
 
 import UserDataView from './UserDataView';
@@ -38,8 +42,8 @@ const config = {
     // is disabled in the Sourcepoint dashboard
     language: SPMessageLanguage.ENGLISH,
     messageTimeoutInSeconds: 20,
-    // Allows Android users to dismiss the consent message on back press. 
-    // True by default. 
+    // Allows Android users to dismiss the consent message on back press.
+    // True by default.
     // Set it to false if you wish to prevent this users from dismissing the message on back press.
     androidDismissMessageOnBackPress: false,
   },
@@ -94,7 +98,7 @@ export default function App() {
     );
 
     consentManager.current?.onMessageInactivityTimeout(() => {
-      console.log("User inactive");
+      console.log('User inactive');
     });
 
     consentManager.current?.onError((description) => {
@@ -146,25 +150,27 @@ export default function App() {
   const onCustomConsentGDPRPress = useCallback(() => {
     setSDKStatus(SDKStatus.Networking);
     consentManager.current?.postCustomConsentGDPR(
-      ["5ff4d000a228633ac048be41"],
-      ["608bad95d08d3112188e0e36", "608bad95d08d3112188e0e2f"],
+      ['5ff4d000a228633ac048be41'],
+      ['608bad95d08d3112188e0e36', '608bad95d08d3112188e0e2f'],
       [],
       (consent: GDPRConsent) => {
         console.log('GDPRConsent:', consent);
         setSDKStatus(SDKStatus.Finished);
-      });
+      }
+    );
   }, []);
 
   const onDeleteCustomConsentGDPRPress = useCallback(() => {
     setSDKStatus(SDKStatus.Networking);
     consentManager.current?.postDeleteCustomConsentGDPR(
-      ["5ff4d000a228633ac048be41"],
-      ["608bad95d08d3112188e0e36", "608bad95d08d3112188e0e2f"],
+      ['5ff4d000a228633ac048be41'],
+      ['608bad95d08d3112188e0e36', '608bad95d08d3112188e0e2f'],
       [],
       (consent: GDPRConsent) => {
         console.log('GDPRConsent:', consent);
         setSDKStatus(SDKStatus.Finished);
-      });
+      }
+    );
   }, []);
 
   const onClearDataPress = useCallback(() => {

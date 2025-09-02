@@ -1,6 +1,6 @@
 import type {
   SPCampaigns,
-  SPBuildOptions
+  SPBuildOptions,
 } from '@sourcepoint/react-native-cmp';
 
 export type LaunchArgs = {
